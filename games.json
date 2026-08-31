@@ -1,0 +1,18 @@
+{
+  "steam_screenshot_folder": "/home/gal/Pictures/Screenshots/Games Screenshots/Steam Games",
+  "sorted_screenshot_folder": "home/gal/Pictures/Screenshots/Games Screenshots",
+  "apps": {
+    "236390": {
+      "name": "War Thunder",
+      "vendor": "Steam"
+    },
+    "1145360": {
+      "name": "Hades",
+      "vendor": "Steam"
+    },
+    "1244460": {
+      "name": "Jurassic World Evolution 2",
+      "vendor": "Steam"
+    }
+  }
+}
