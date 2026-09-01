@@ -1,0 +1,219 @@
+#!/bin/bash
+
+readonly ERR_UNMET_DEPENDENCIES=10
+readonly ERR_INPUT_NOT_SPECIFIED=11
+readonly ERR_OUTPUT_NOT_SPECIFIED=12
+readonly ERR_STEAM_GAMENAME=13
+
+exitfn () {
+  local exit_code=$?
+  echo "DEBUG: exit code = $exit_code" >&2
+
+  case $exit_code in
+    "$ERR_UNMET_DEPENDENCIES")
+      echo "Error: this program has unmet dependencies:" >&2
+      if ! command -v jq > /dev/null; then
+        echo "Please make sure jq is installed and in PATH." | sed 's/^/  /' >&2
+      fi
+      if ! command -v steamcmd > /dev/null; then
+        echo "Please make sure SteamCMD is installed and in PATH." | sed 's/^/  /' >&2
+      fi
+      ;;
+    "$ERR_INPUT_NOT_SPECIFIED")
+      echo "Error: Steam screenshot folder not set." >&2
+      echo "Please do so using --set-default-input-dir \"/path/to/dir\" (without a trailing /)." | sed 's/^/  /' >&2
+      echo "For more information and other options, use -h or --help." | sed 's/^/  /' >&2
+      ;;
+    "$ERR_OUTPUT_NOT_SPECIFIED")
+      echo "Error: Desired screenshot output folder not set." >&2
+      echo "Please do so using --set-default-output-dir \"/path/to/dir\" (without a trailing /)." | sed 's/^/  /' >&2
+      echo "For more information and other options, use -h or --help." | sed 's/^/  /' >&2
+      ;;
+    "$ERR_STEAM_GAMENAME")
+      echo "Error: Unable to retrieve game name from SteamCMD. App ID: $app_id." >&2
+      echo "This can be due to SteamCMD returning an error or not finding a game with this App ID." | sed 's/^/  /' >&2
+      echo "You can try again, add this App ID to the ignore list, or specify the game's title manually." | sed 's/^/  /' >&2
+      echo "For more information use -h or --help." | sed 's/^/  /' >&2
+      ;;
+  esac
+}
+
+trap exitfn EXIT
+
+if ! command -v jq > /dev/null 2>&1 || ! command -v steamcmd > /dev/null 2>&1; then
+  exit $ERR_UNMET_DEPENDENCIES
+fi
+
+if command -v tput > /dev/null 2>&1; then
+  bold=$(tput bold)
+  normal=$(tput sgr0)
+  cyanf=$(tput setaf 6)
+  #resetf=$(tput setaf 9) doesn't work... not the right colour code (256 and -1 don't work either)
+  #width=$(tput cols)
+fi
+
+tmpdir="/tmp"
+tempfile="$tmpdir/transfer.tmp"
+
+if [[ -z "$XDG_DATA_HOME" ]]; then
+  datadir="$HOME/.local/share/screenshot-sorter"
+else
+  datadir="$XDG_DATA_HOME/screenshot-sorter"
+fi
+
+jsondb="$datadir/games.json"
+
+if [ ! -s "$jsondb" ]; then
+  echo "Valid database file not found. Initializing at $jsondb."
+  echo
+  { echo "{}" > "$jsondb"; } 2> /dev/null || { mkdir -p "$datadir"; echo "{}" > "$jsondb"; }
+fi
+
+defaultdir="$(jq -r '.steam_screenshot_folder // empty' "$jsondb")"
+outputdir="$(jq -r '.sorted_screenshot_folder // empty' "$jsondb")"
+
+query_steamcmd () {
+  app_id="${1}"
+  app_info="$(steamcmd +app_info_print "$app_id" +quit | grep "name")"
+  nameline="${app_info%%$'"\n'*}"
+  gamename="${nameline##*\"}"
+  if [ -z "$gamename" ]; then
+    return "$ERR_STEAM_GAMENAME"
+  fi
+  jq --arg id "$app_id" --arg name "$gamename" '.apps.[$id].name = $name | .apps.[$id].vendor = "Steam"' \
+   "$jsondb" > "$tempfile" && mv "$tempfile" "$jsondb"
+  echo "$gamename"
+}
+
+sort_folder () {
+  for filepath in "${1}"/*
+  do
+    filename=${filepath##*/}
+    #echo "$filename"
+    app_id="${filename%%_*}"
+    #echo "Checking local database for $app_id."
+    gamename="$(jq -r --arg id "$app_id" '.apps.[$id].screenshot_ignore // .apps.[$id].name // empty' "$jsondb")"
+    if [ -z "$gamename" ]; then
+      echo "$app_id isn't in the local database."
+      echo "Querying SteamCMD..."
+      steamgamename="$(query_steamcmd "$app_id")"
+      if [ -z "$steamgamename" ]; then
+        exit "$ERR_STEAM_GAMENAME"
+      fi
+      echo "$app_id is $steamgamename."
+      mkdir -p "$outputdir/$gamename"
+      mv "$filepath" "$outputdir/$gamename/$filename" 2> /dev/null
+    elif ! [ "$gamename" == "true" ]; then
+      #echo "The game $app_id is '$gamename'."
+      mv "$filepath" "$outputdir/$gamename/$filename" 2> /dev/null || { mkdir -p "$outputdir/$gamename"; mv "$filepath" "$outputdir/$gamename/$filename"; }
+    fi
+  done
+}
+
+if [ -z "$1" ]; then
+  if [ -z "$defaultdir" ]; then
+    exit $ERR_INPUT_NOT_SPECIFIED
+  elif [ -z "$outputdir" ]; then
+    exit $ERR_OUTPUT_NOT_SPECIFIED
+  fi
+  echo "Sorting through the default Steam screenshots folder: ${defaultdir}. Output folder is ${outputdir}"
+  echo
+  sort_folder "${defaultdir}"
+  echo "Process completed"
+  exit 0
+elif [ "$1" == "--set-default-input-dir" ]; then
+  if [ -z "$2" ]; then
+    echo "Error: Please specify an input directory." >&2
+    exit 22 #invalid argument
+  fi
+  jq --arg dir "$2" '.steam_screenshot_folder = $dir' "$jsondb" > "$tempfile" && mv "$tempfile" "$jsondb"
+elif [ "$1" == "--set-default-output-dir" ]; then
+  if [ -z "$2" ]; then
+    echo "Error: Please specify an output directory."
+    exit 22 #invalid argument
+  fi
+  jq --arg dir "$2" '.sorted_screenshot_folder = $dir' "$jsondb" > "$tempfile" && mv "$tempfile" "$jsondb"
+elif [ "$1" == "--ignore-app-id" ]; then
+  if [ -z "$2" ]; then
+    echo "Error: Please specify an App ID." >&2
+    exit 22 #invalid argument
+  fi
+  jq --arg id "$2" '.apps.[$id].screenshot_ignore = true' "$jsondb" > "$tempfile" && mv "$tempfile" "$jsondb"
+elif [ "$1" == "--unignore-app-id" ]; then
+  if [ -z "$2" ]; then
+    echo "Error: Please specify an App ID." >&2
+    exit 22 #invalid argument
+  fi
+  jq --arg id "$2" '.apps.[$id].screenshot_ignore = false' "$jsondb" > "$tempfile" && mv "$tempfile" "$jsondb"
+elif [ "$1" == "--set-app-metadata" ]; then
+  args=$#
+  if [ -z "$2" ]; then
+    echo "Error: Please specify an App ID." >&2
+    exit 22 #invalid argument
+  fi
+  app_id="$2"
+  for (( i=3; i<=args; i+=2 ))
+  do
+    argkey="${!i}"
+    j=$((i+1))
+    argvalue="${!j}"
+    #echo "$app_id - $argkey : $argvalue"
+    if [[ $argvalue == "true" ]]; then
+      jq --arg id "$app_id" --arg key "$argkey" '.apps.[$id].[$key] = true' "$jsondb" > "$tempfile" && mv "$tempfile" "$jsondb"
+    elif [[ $argvalue == "false" ]]; then
+      jq --arg id "$app_id" --arg key "$argkey" '.apps.[$id].[$key] = false' "$jsondb" > "$tempfile" && mv "$tempfile" "$jsondb"
+    else
+      jq --arg id "$app_id" --arg key "$argkey" --arg value "$argvalue" '.apps.[$id].[$key] = $value' "$jsondb" > "$tempfile" && mv "$tempfile" "$jsondb"
+    fi
+  done
+elif [ "$1" == "-h" ] || [ "$1" == "--help" ]; then
+  cat << EOF
+  ${bold}Steam Screenshot Sorter${normal}
+  Sifts through all the screenshots in the Steam screenshot folder and moves them to a specified
+  directory, where they are grouped into folders by game.
+
+  ${bold}Dependencies:${normal} SteamCMD and jq.
+
+  ${bold}Usage:${normal} screenshot-sorter [--option <value>]
+
+  ${bold}Options:${normal}
+  --set-default-input-dir <path>              Set the default Steam screenshot folder to sort. The
+                                              path must be a string of the type "/path/to/folder"
+                                              (without a trailing "/").
+
+  --set-default-output-dir <path>             Set the default folder to place the sorted files in.
+                                              The path must be a string of type "/path/to/folder"
+                                              (without a trailing "/"). Inside this folder, the
+                                              program will create a sub-folder for each game. If
+                                              the specified folder doesn't exist, it will be
+                                              created.
+
+  --ignore-app-id <app_id>                    Set the specified App ID to be ignored and screenshots
+                                              pertaining to it to not be sorted. This information
+                                              is stored in the database file of the program, and
+                                              will be used next time it runs without any options.
+
+  --unignore-app-id <app_id>                  Undo --ignore-app-id for the specified App ID. Has no
+                                              effect if the App ID wasn't previously ignored.
+
+  --set-app-metadata <app_id> <key> <value>   Set the metadata for the specified App ID, storing it
+                                              in the program database file. More than one key-value
+                                              pair can be specified, but a key must be immediately
+                                              followed by it's corresponding value.
+                                              Currently valid keys for game data
+                                              and options are:
+                                               - "name"              : the game title
+                                               - "vendor"            : the storefront the game was
+                                                                       acquired from, or "sideload"
+                                               - "screenshot_ignore" : ${cyanf}true${normal} or ${cyanf}false${normal}
+
+  --help, -h                                  Show this screen and exit.
+EOF
+  exit 0
+else
+  echo "Error: unknown option $1." >&2
+  exit 22 #invalid argument
+fi
+
+# todo: allow for one-time custom directories to be fed
+# todo: maybe switch from steamcmd to some steam api if it exists and can be used without api key preferrably
