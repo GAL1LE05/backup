@@ -7,8 +7,9 @@ readonly ERR_STEAM_GAMENAME=13
 
 exitfn () {
   local exit_code=$?
-  echo "DEBUG: exit code = $exit_code" >&2
-
+  if ! [ $exit_code -eq 0 ]; then
+    echo "DEBUG: exit code = $exit_code" >&2
+  fi
   case $exit_code in
     "$ERR_UNMET_DEPENDENCIES")
       echo "Error: this program has unmet dependencies:" >&2
@@ -92,6 +93,10 @@ sort_folder () {
     #echo "$filename"
     app_id="${filename%%_*}"
     #echo "Checking local database for $app_id."
+    if [ "$app_id" == "*" ]; then
+      echo "There are no files to sort."
+      exit 0
+    fi
     gamename="$(jq -r --arg id "$app_id" '.apps.[$id].screenshot_ignore // .apps.[$id].name // empty' "$jsondb")"
     if [ -z "$gamename" ]; then
       echo "$app_id isn't in the local database."
