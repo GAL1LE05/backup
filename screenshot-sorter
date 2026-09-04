@@ -220,5 +220,7 @@ else
   exit 22 #invalid argument
 fi
 
+# Code by Bruno Duarte, 2026
+
 # todo: allow for one-time custom directories to be fed
 # todo: maybe switch from steamcmd to some steam api if it exists and can be used without api key preferrably
